@@ -299,9 +299,11 @@ flowchart TD
 
 ---
 
-## 十二、版本规划
+## 十二、产品功能规划
 
-**v0.1**
+> 这是产品层面的功能范围；**怎么从零一步步把它建出来**，见第十五节开发计划（技术里程碑 0.1–0.4）。
+
+**产品 MVP**
 - [ ] H5：新建场景 → 上传 → 展示 → 下载
 - [ ] 后端 TS：分析接口 + 图生图接口
 - [ ] 姿势与构图方案的结构化输出
@@ -312,7 +314,7 @@ flowchart TD
 - [ ] 服务端不落盘：临时文件 TTL 与清理时机
 - [ ] 本地历史（Windows）
 
-**v0.2**
+**后续**
 - [ ] 本地历史补齐 Android / iOS
 - [ ] 依据实拍结果反馈调优方案
 
@@ -346,3 +348,222 @@ flowchart TD
 1. **姿势与构图方案的质量评估**（优先级最高）——拿一批真实场景图，让模型出方案，人工打分。看它是稳定能用，还是忽好忽坏。这一条决定产品成不成立。
 2. **意图推断实验**——看模型推断出的候选意图是否合理、命中率有多高，以及"都不对，我来说"的使用率。
 3. **光照判断准确率实验**——拿不同光照条件的图（顺光、侧光、逆光、顶光、室内混合光），看那个二元判断的准确率，决定要不要进一步弱化措辞。
+
+---
+
+## 十五、开发计划（技术里程碑 0.1 — 0.4）
+
+本节和第十二节的关系：第十二节是**产品功能范围**（最终要做成什么），本节是**技术攻坚顺序**（怎么从零一步步打通链路）。0.1–0.4 四个里程碑全部通过后，才具备实现产品 MVP 的地基——它们解决的是"链路通不通"，不是"功能全不全"。
+
+### 技术选型
+
+| 层 | 选型 | 说明 |
+| --- | --- | --- |
+| 前端框架 | React 18 + Vite + TypeScript | 竖屏 H5，后续扩展成相机式界面 |
+| 移动 UI | Ant Design Mobile（`antd-mobile`） | 移动端优先组件库 |
+| 后端框架 | Node.js + Express + TypeScript | 轻量，SSE 用 `res.write` 手写 |
+| 文件上传 | `multer` | 处理 multipart/form-data |
+| 图片存储 | 内存（base64）+ 可选落盘 | 默认只留内存；`SAVE_UPLOAD_COPY` 开关打开才写 `uploads/`，仅测试用 |
+| LLM 调用 | DMXAPI（OpenAI 兼容，官方 `openai` SDK） | 见第九节接入信息 |
+| 开发运行 | 后端 `tsx` 热重载；前端 Vite dev proxy | `/api` 代理到后端，避免 CORS |
+| 密钥 | `backend/.env` | DMXAPI 令牌、模型名，gitignore |
+
+三条贯穿全程的约定：
+
+1. **前后端分两个目录，用 Vite dev proxy 打通。** 前端所有请求都走 `/api/*`，Vite 把 `/api` 代理到 `http://localhost:3000`。好处是浏览器里始终同源，流式响应不用跨域，也不必配 CORS。
+2. **每版都能独立跑通，有明确验收标准。** 里程碑之间不追求一次到位，只求上一版的地基不推倒。
+3. **设计和技术选型落地后，先用小版本验证，之后尽量不再改。** 流式传输一开始就定 `fetch` + `ReadableStream`（不用 `EventSource`），图片存储一开始就定"内存 + 可选落盘"——这些底座在 0.1–0.4 期间定死并验证，进产品 MVP 后不再重来。凡是要"以后再说"的折中，都该在小版本里暴露并解决，不带到下一版。
+
+### 项目目录总览（0.4 完成后）
+
+```text
+boyfriend-savior-from-bad-shots/
+├── frontend/                     # H5 前端（React + Vite + antd-mobile）
+│   ├── src/
+│   │   ├── main.tsx
+│   │   ├── App.tsx               # 页面入口，按版本逐步加内容
+│   │   ├── api/                  # 后端通信封装（fetch 流式）
+│   │   ├── components/
+│   │   └── pages/                # 相机式界面逐步拆到这里
+│   ├── index.html
+│   ├── vite.config.ts            # dev proxy: /api → localhost:3000
+│   ├── tsconfig.json
+│   └── package.json
+├── backend/                      # TS 后端（Express）
+│   ├── src/
+│   │   ├── index.ts              # 启动 + 中间件挂载
+│   │   ├── routes/               # 路由：hello / upload / chat / analyze
+│   │   └── services/
+│   │       └── llm.ts            # DMXAPI 封装（文本 / 多模态）
+│   ├── uploads/                  # 可选测试落盘目录（gitignore，由开关控制，默认关闭）
+│   ├── .env                      # DMXAPI 令牌等（gitignore）
+│   ├── tsconfig.json
+│   └── package.json
+├── README.md
+└── .gitignore
+```
+
+---
+
+### 里程碑 0.1 —— 最小闭环：Hello World
+
+**目标**：打通前端 ↔ 后端最基本的一条链路，验证选型能跑起来。
+
+- **前端**：一个竖屏居中的页面，一个按钮 + 一个 label。点按钮，`fetch` 调 `POST /api/hello`，把返回的文字写进 label。
+- **后端**：Express 起一个服务，路由 `POST /api/hello` 返回 `{ message: "hello world" }`。
+- **竖屏准备**：viewport 设 `width=device-width`，页面容器限制最大宽度并居中，为后续相机式全屏界面留好骨架。
+
+**验收**：点按钮，label 从初始文字变成 "hello world"。
+
+```mermaid
+sequenceDiagram
+    participant F as 前端(React)
+    participant B as 后端(Express)
+    F->>B: POST /api/hello
+    B-->>F: { message: "hello world" }
+    F->>F: label 文字更新
+```
+
+**目录**（本版新增）：
+
+```text
+frontend/
+├── src/
+│   ├── main.tsx
+│   └── App.tsx                  # 按钮 + label
+├── index.html
+├── vite.config.ts               # /api 代理到后端
+└── package.json
+backend/
+├── src/
+│   ├── index.ts                 # 启动
+│   └── routes/
+│       └── hello.ts             # POST /api/hello
+└── package.json
+```
+
+---
+
+### 里程碑 0.2 —— 图片上传（内存 + 可选落盘）
+
+**目标**：打通图片上传链路，并**一次性定下图片存储方式**（内存为主 + 可选落盘），后续版本不再改。
+
+- **前端**：图片选择（`<input type="file">` 或 antd-mobile 上传组件）+ 预览，用 `FormData` 传 `POST /api/upload`，label 显示返回结果。
+- **后端**：`multer` 用内存存储（memoryStorage）接收，图片以 base64 留在内存；**额外**提供一个开关（如 `SAVE_UPLOAD_COPY`），打开时把副本写入 `backend/uploads/`，关闭时完全不写盘。返回 `{ message: "上传完毕", filename, saved: true|false }`。
+
+> **存储方式从本版起就固定，后面不再改。** 产品原则（第十一节）要求上传图不长期落盘，所以内存是主路径；写 `uploads/` 只是一份**随时可关的测试副本**，用于人工确认图片内容是否正确到达。进产品 MVP 后把开关保持默认关闭即可，不需要再动存储逻辑。
+
+**验收**：上传一张图，前端 label 显示"上传完毕"；开关打开时 `uploads/` 下出现副本，关闭时 `uploads/` 无新文件。
+
+```mermaid
+sequenceDiagram
+    participant F as 前端(React)
+    participant B as 后端(Express)
+    participant D as 磁盘(uploads/, 可选)
+    F->>B: POST /api/upload<br/>multipart/form-data
+    B->>B: 图片进内存（base64）
+    opt 开关打开（仅测试）
+        B->>D: 写一份副本
+    end
+    B-->>F: { message: "上传完毕", saved }
+    F->>F: label 显示结果
+```
+
+**目录**（本版新增/变动）：
+
+```text
+frontend/src/
+├── components/
+│   └── Upload.tsx               # 选择 + 预览
+backend/
+├── src/routes/
+│   └── upload.ts                # POST /api/upload
+└── uploads/                     # 可选测试落盘（gitignore，开关控制）
+```
+
+---
+
+### 里程碑 0.3 —— LLM 通信 + 流式返回
+
+**目标**：打通后端 → LLM 的通信，并用流式让前端 label 动态更新。**流式传输方式从本版起一步到位定为 `fetch` + `ReadableStream`，不再用 `EventSource`。**
+
+- **前端**：复用 0.1 的按钮，把动作从 `POST /api/hello` 改成 `fetch('POST /api/chat')`，用 `ReadableStream` 读取响应体、手动解析 SSE 格式的事件；label 随事件更新（先显示"正在调用 LLM"，再逐段显示返回文本）。
+- **后端**：`POST /api/chat` 返回 `text/event-stream`；收到请求后，向 DMXAPI 发**写死的消息**（`stream: true`），把状态和文本分片转成 SSE 事件写回响应流。
+- **为什么是 `fetch` + `ReadableStream` 而不是 `EventSource`**：`EventSource` 只支持 GET、不能带请求体，0.4 起需要"带图上传 + 流式返回"时它就废了。与其先 `EventSource` 再改，不如本版直接用 `fetch` + `ReadableStream`（支持 POST、支持请求体），一次到位、后面不再改。
+
+**验收**：点按钮，label 先显示"正在调用 LLM"，随后显示 LLM 对写死消息的完整回复。
+
+```mermaid
+sequenceDiagram
+    participant F as 前端(React)
+    participant B as 后端(Express)
+    participant L as LLM(DMXAPI)
+    F->>B: POST /api/chat<br/>(fetch + ReadableStream)
+    B-->>F: event: status "正在调用 LLM"
+    B->>L: POST /chat/completions<br/>写死消息 + stream:true
+    loop 流式返回
+        L-->>B: 文本分片
+        B-->>F: event: delta 分片
+    end
+    B-->>F: event: done
+    F->>F: label 逐段更新
+```
+
+**目录**（本版新增/变动）：
+
+```text
+frontend/src/
+├── api/
+│   └── stream.ts                # fetch + ReadableStream 封装
+backend/src/
+├── services/
+│   └── llm.ts                   # DMXAPI 文本调用（stream）
+├── routes/
+│   └── chat.ts                  # POST /api/chat（SSE 流式）
+└── .env                         # DMXAPI_API_KEY、MODEL
+```
+
+---
+
+### 里程碑 0.4 —— 图片 + 多模态分析（流式）
+
+**目标**：把图片送进多模态模型，拿到分析结果，完成"图 → 模型 → 文字结论"的最后一环。
+
+- **前端**：复用 0.2 的上传组件，把图 `POST /api/analyze`，沿用 0.3 的 `fetch` + `ReadableStream` 流式读取分析结果，label 随事件更新。
+- **后端**：图片按 0.2 定下的方式处理（内存 base64，可选落盘开关照旧），连同写死的分析请求一起发给多模态模型（`doubao-seed` 视觉模型，`/chat/completions` 的图片内容格式），把分析结果以 SSE 流式写回。
+- **不新增传输方式**：流式已由 0.3 定下 `fetch` + `ReadableStream`，图片存储已由 0.2 定下"内存 + 可选落盘"，本版只是把两者组合起来，不引入任何新的折中。
+
+**验收**：上传一张场景图，label 以流式显示模型对该图的分析结论（如画面内容、光照、可站位等）。
+
+```mermaid
+sequenceDiagram
+    participant F as 前端(React)
+    participant B as 后端(Express)
+    participant M as 多模态模型(DMXAPI)
+    F->>B: POST /api/analyze<br/>multipart 图片（fetch + ReadableStream）
+    B->>B: base64 进内存（可选落盘照旧）
+    B->>M: POST /chat/completions<br/>写死分析请求 + 图片
+    M-->>B: 分析结果
+    B-->>F: event: delta / done（SSE 流式）
+    F->>F: label 流式更新
+```
+
+**目录**（本版新增/变动）：
+
+```text
+backend/src/
+├── services/
+│   └── llm.ts                   # 增加多模态调用（base64 图片）
+├── routes/
+│   └── analyze.ts               # POST /api/analyze（SSE 流式）
+frontend/src/components/
+└── Upload.tsx                   # 上传后改走 /api/analyze
+```
+
+（0.2 定下的"内存 + 可选落盘"沿用，无新增目录。）
+
+---
+
+### 0.4 之后
+
+四个里程碑全部通过，意味着"上传 → 后端 → 模型 → 前端"整条链路已经打通，且流式传输（`fetch` + `ReadableStream`）和图片存储（内存 + 可选落盘）两套底座在 0.3、0.4 已经定型并验证过。下一步不是继续堆功能，而是**回到第十二节的产品 MVP**，把"姿势与构图方案"这个真正的核心产出接进去——届时 0.4 的"写死请求"换成第五节的结构化方案，底座不动。
